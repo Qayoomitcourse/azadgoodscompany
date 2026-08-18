@@ -10,6 +10,7 @@ export default {
     { name: "truckType", title: "Truck type", type: "string" },
     { name: "route", title: "Usual route", type: "string" },
     { name: "normalRate", title: "Normal rate", type: "number" },
+    { name: "isDemo", title: "Demo record", type: "boolean", description: "Sample data created by the app's \"Load demo data\" button — safe to bulk-delete via \"Remove demo data\" before going live." },
   ],
   preview: {
     select: { title: "name", subtitle: "truckNo" },

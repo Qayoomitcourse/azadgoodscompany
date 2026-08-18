@@ -9,6 +9,7 @@ export default {
     { name: "city", title: "City", type: "string" },
     { name: "address", title: "Address", type: "string" },
     { name: "terms", title: "Payment terms", type: "string" },
+    { name: "isDemo", title: "Demo record", type: "boolean", description: "Sample data created by the app's \"Load demo data\" button — safe to bulk-delete via \"Remove demo data\" before going live." },
   ],
   preview: {
     select: { title: "name", subtitle: "city" },

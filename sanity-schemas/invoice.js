@@ -23,6 +23,7 @@ export default {
     { name: "previousBalance", title: "Previous balance", type: "number" },
     { name: "previousBalanceRefs", title: "Previous balance refs", type: "array", of: [{ type: "string" }] },
     { name: "carriedForward", title: "Carried forward", type: "boolean" },
+    { name: "isDemo", title: "Demo record", type: "boolean", description: "Sample data created by the app's \"Load demo data\" button — safe to bulk-delete via \"Remove demo data\" before going live." },
   ],
   preview: {
     select: { title: "serial", subtitle: "customerId" },

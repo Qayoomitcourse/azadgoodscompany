@@ -36,6 +36,7 @@ export default {
     { name: "invoiceSerial", title: "Invoice serial", type: "string" },
     { name: "transporterPayMethod", title: "Transporter pay method", type: "string" },
     { name: "transporterPayRef", title: "Transporter pay reference", type: "string" },
+    { name: "isDemo", title: "Demo record", type: "boolean", description: "Sample data created by the app's \"Load demo data\" button — safe to bulk-delete via \"Remove demo data\" before going live." },
   ],
   preview: {
     select: { title: "orderNo", subtitle: "item" },

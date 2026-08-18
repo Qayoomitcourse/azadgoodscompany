@@ -6,6 +6,21 @@ invoices) to Sanity instead of an in-memory array.
 
 ## Changelog (latest update)
 
+- **Demo/sample data, one click to load and one click to remove.** A new
+  "Demo / test data" card on the Dashboard (`Load demo data`) creates 2
+  sample customers, 2 sample transporters, 6 sample shipments (mixing
+  Pending/In Transit/Delivered) and one sample bill — one paid, one left
+  billable — so you can click through Shipments, Billing, Invoices,
+  Settlement and Reports with real-looking numbers before entering your
+  actual business data. Every demo record is tagged `isDemo: true` and
+  shows a small **DEMO** pill wherever it appears (Shipments, Customers,
+  Transporters, Invoices). When you're ready to go live, click
+  `Remove demo data` (only shown once demo data exists) to delete all of
+  it in one confirmed action — your real records are never touched. This
+  needs `VITE_SANITY_WRITE_TOKEN` configured, same as any other write in
+  the app (see "Writes & security" below). The four schema files in
+  `sanity-schemas/` each got a matching `isDemo` boolean field so it's
+  also visible/filterable in Sanity Studio.
 - **Vehicle No. is now its own required field** on New shipment (next
   to Customer company, which was already required) — everything else
   on that form is optional. This matches the printed register where

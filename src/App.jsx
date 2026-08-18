@@ -17,6 +17,7 @@ import {
   Download,
   Archive,
   Eye,
+  FlaskConical,
 } from "lucide-react";
 import { fetchAllTypes, createDoc, patchDoc, removeDoc } from "./sanityData";
 
@@ -196,6 +197,16 @@ function StatusBadge({ status }) {
   return (
     <span style={{ background: c.bg, color: c.fg, fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 3, textTransform: "uppercase", letterSpacing: 0.4 }}>
       {status}
+    </span>
+  );
+}
+
+// Small pill used to flag demo/sample records anywhere they appear
+// on screen, so they're never mistaken for real data.
+function Tag({ text, color }) {
+  return (
+    <span style={{ display: "inline-block", fontSize: 9.5, fontWeight: 700, letterSpacing: 0.5, color: "#fff", background: color, borderRadius: 3, padding: "1px 5px", verticalAlign: "middle" }}>
+      {text}
     </span>
   );
 }
@@ -505,6 +516,91 @@ export default function App() {
 
   const customerById = (id) => customers.find((c) => c.id === id);
   const transporterById = (id) => transporters.find((t) => t.id === id);
+
+  // ---- demo / sample data (for trying the app out before go-live) ----
+  // Everything created here is tagged isDemo: true so it can be told
+  // apart on screen (a "DEMO" pill) and removed in one click with
+  // clearDemoData() once real data entry starts — see the card on the
+  // Dashboard. Needs a Sanity write token configured, same as any other
+  // write in this app.
+  const hasDemoData =
+    customers.some((c) => c.isDemo) ||
+    transporters.some((t) => t.isDemo) ||
+    shipments.some((s) => s.isDemo) ||
+    invoices.some((i) => i.isDemo);
+  const [demoBusy, setDemoBusy] = useState(false);
+
+  async function seedDemoData() {
+    if (demoBusy) return;
+    setDemoBusy(true);
+    try {
+      const c1 = await createDoc("customer", { name: "Sindh Traders (Demo)", contact: "Imran", phone: "0300-1112233", city: "Karachi", address: "Site Area, Karachi", terms: "15 days", isDemo: true });
+      const c2 = await createDoc("customer", { name: "Punjab Agro Mills (Demo)", contact: "Bilal", phone: "0321-4445566", city: "Multan", address: "Industrial Estate, Multan", terms: "30 days", isDemo: true });
+      setCustomers((prev) => [...prev, c1, c2]);
+
+      const t1 = await createDoc("transporter", { name: "Akram Goods Carrier (Demo)", driver: "Akram", mobile: "0333-1122334", truckNo: "JT-0194", truckType: "10 Wheeler", isDemo: true });
+      const t2 = await createDoc("transporter", { name: "Shahid Transport (Demo)", driver: "Shahid", mobile: "0345-9988776", truckNo: "TLA-8821", truckType: "Mazda", isDemo: true });
+      setTransporters((prev) => [...prev, t1, t2]);
+
+      const today = todayISO();
+      const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
+      const demoShipmentDefs = [
+        { date: daysAgo(21), customerId: c1.id, vehicleNo: t1.truckNo, item: "Cement", qty: "200 Bags", pickup: "Karachi", delivery: "Hyderabad", truckType: "10 Wheeler", customerRate: 28000, transporterId: t1.id, transporterRate: 24000, labour: 500, other: 0, receiver: "Waheed", status: "Delivered", transporterPaid: 24000 },
+        { date: daysAgo(18), customerId: c1.id, vehicleNo: t2.truckNo, item: "Rice", qty: "300 Bags", pickup: "Karachi", delivery: "Sukkur", truckType: "Mazda", customerRate: 32000, transporterId: t2.id, transporterRate: 27000, labour: 400, other: 200, receiver: "Nasir", status: "Delivered", transporterPaid: 27000 },
+        { date: daysAgo(12), customerId: c2.id, vehicleNo: t1.truckNo, item: "Fertilizer", qty: "150 Bags", pickup: "Multan", delivery: "Lahore", truckType: "10 Wheeler", customerRate: 21000, transporterId: t1.id, transporterRate: 17500, labour: 300, other: 0, receiver: "Kashif", status: "Delivered", transporterPaid: 10000 },
+        { date: daysAgo(7), customerId: c2.id, vehicleNo: t2.truckNo, item: "Wheat", qty: "250 Bags", pickup: "Multan", delivery: "Faisalabad", truckType: "Mazda", customerRate: 19000, transporterId: t2.id, transporterRate: 15000, labour: 300, other: 0, receiver: "Sohail", status: "In Transit", transporterPaid: 0 },
+        { date: daysAgo(3), customerId: c1.id, vehicleNo: t1.truckNo, item: "Sugar", qty: "180 Bags", pickup: "Karachi", delivery: "Larkana", truckType: "10 Wheeler", customerRate: 26000, transporterId: t1.id, transporterRate: 21000, labour: 400, other: 0, receiver: "Zubair", status: "Pending", transporterPaid: 0 },
+        { date: today, customerId: c2.id, vehicleNo: t2.truckNo, item: "Cotton bales", qty: "90 Bales", pickup: "Multan", delivery: "Karachi", truckType: "Mazda", customerRate: 34000, transporterId: t2.id, transporterRate: 29000, labour: 500, other: 300, receiver: "Adeel", status: "Pending", transporterPaid: 0 },
+      ];
+      const createdShipments = [];
+      for (const def of demoShipmentDefs) {
+        const s = await createDoc("shipment", { orderNo: nextOrderNo.replace(/\d+$/, (m) => String(Number(m) + createdShipments.length).padStart(6, "0")), ...def, invoiced: false, invoiceSerial: null, transporterPayMethod: def.transporterPaid ? "Cash" : "", transporterPayRef: "", isDemo: true });
+        createdShipments.push(s);
+      }
+      setShipments((prev) => [...prev, ...createdShipments]);
+
+      // one paid, one outstanding demo bill, covering the first two (already delivered) shipments
+      const [s1, s2] = createdShipments;
+      const genDate = daysAgo(2);
+      const serial = invoiceSerialStr(invoiceSerial, genDate);
+      const total = s1.customerRate + s1.labour + s1.other;
+      const inv1 = await createDoc("invoice", { serial, customerId: c1.id, generatedDate: genDate, shipmentIds: [s1.id], total, payment: { amount: total, method: "Bank Transfer", ref: "DEMO-TXN-001", date: daysAgo(1) }, previousBalance: 0, previousBalanceRefs: [], carriedForward: false, isDemo: true });
+      await patchDoc(s1.id, { invoiced: true, invoiceSerial: serial });
+      setShipments((prev) => prev.map((s) => (s.id === s1.id ? { ...s, invoiced: true, invoiceSerial: serial } : s)));
+      setInvoices((prev) => [...prev, inv1]);
+      setInvoiceSerial((n) => n + 1);
+      void s2; // second delivered demo shipment is left uninvoiced on purpose, to show up as billable
+    } catch (err) {
+      window.alert("Couldn't load demo data: " + err.message);
+    } finally {
+      setDemoBusy(false);
+    }
+  }
+
+  async function clearDemoData() {
+    if (demoBusy) return;
+    if (!window.confirm("Remove all demo/sample records (customers, transporters, shipments and bills tagged as demo)? This cannot be undone. Your real data is untouched.")) return;
+    setDemoBusy(true);
+    try {
+      const demoInvoices = invoices.filter((i) => i.isDemo);
+      const demoShipments = shipments.filter((s) => s.isDemo);
+      const demoCustomers = customers.filter((c) => c.isDemo);
+      const demoTransporters = transporters.filter((t) => t.isDemo);
+      // invoices first (they lock shipments), then shipments, then parties
+      await Promise.all(demoInvoices.map((i) => removeDoc(i.id)));
+      await Promise.all(demoShipments.map((s) => removeDoc(s.id)));
+      await Promise.all(demoCustomers.map((c) => removeDoc(c.id)));
+      await Promise.all(demoTransporters.map((t) => removeDoc(t.id)));
+      setInvoices((prev) => prev.filter((i) => !i.isDemo));
+      setShipments((prev) => prev.filter((s) => !s.isDemo));
+      setCustomers((prev) => prev.filter((c) => !c.isDemo));
+      setTransporters((prev) => prev.filter((t) => !t.isDemo));
+    } catch (err) {
+      window.alert("Couldn't remove all demo data: " + err.message);
+    } finally {
+      setDemoBusy(false);
+    }
+  }
 
   const nextOrderNo = useMemo(() => {
     const nums = shipments.map((s) => parseInt(s.orderNo.split("-")[1], 10) || 0);
@@ -973,6 +1069,26 @@ export default function App() {
                 </div>
               ))}
             </Card>
+
+            <Card style={{ marginTop: 16, border: `1px dashed ${STEEL}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <FlaskConical size={15} color={STEEL} />
+                <div style={{ fontFamily: "'Oswald', sans-serif", fontSize: 14 }}>Demo / test data</div>
+              </div>
+              <p style={{ color: "#6B6656", fontSize: 12.5, margin: "0 0 10px", maxWidth: 560 }}>
+                Load a few sample customers, transporters, shipments and one sample bill to try the app out — everything is tagged
+                {" "}<Tag text="DEMO" color={STEEL} />{" "}
+                on screen so it's never mixed up with real records. Remove it in one click before you start entering real shipments.
+              </p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button style={btnGhost} disabled={demoBusy} onClick={seedDemoData}>{demoBusy ? "Working…" : "Load demo data"}</button>
+                {hasDemoData && (
+                  <button style={{ ...btnGhost, color: RUST, borderColor: RUST }} disabled={demoBusy} onClick={clearDemoData}>
+                    <Trash2 size={13} /> {demoBusy ? "Working…" : "Remove demo data"}
+                  </button>
+                )}
+              </div>
+            </Card>
           </>
         )}
 
@@ -1111,7 +1227,7 @@ export default function App() {
                     const transporterBalance = s.transporterRate - (s.transporterPaid || 0);
                     return (
                     <tr key={s.id} style={{ borderTop: `1px solid ${LINE}`, background: rowBg, borderLeft: `3px solid ${rowBorder}` }}>
-                      <td style={{ padding: "9px 10px" }}><Stamp>{s.orderNo}</Stamp></td>
+                      <td style={{ padding: "9px 10px" }}><Stamp>{s.orderNo}</Stamp>{s.isDemo && <div style={{ marginTop: 3 }}><Tag text="DEMO" color={STEEL} /></div>}</td>
                       <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{s.date}</td>
                       <td style={{ padding: "9px 10px" }}>{customerById(s.customerId)?.name || "—"}</td>
                       <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{s.vehicleNo || "—"}</td>
@@ -1182,7 +1298,7 @@ export default function App() {
                   <tbody>
                     {customers.map((c) => (
                       <tr key={c.id} style={{ borderTop: `1px solid ${LINE}`, background: editingCustomerId === c.id ? "#FBF2E0" : undefined }}>
-                        <td style={{ padding: "9px 10px", fontWeight: 500 }}>{c.name}</td>
+                        <td style={{ padding: "9px 10px", fontWeight: 500 }}>{c.name} {c.isDemo && <Tag text="DEMO" color={STEEL} />}</td>
                         <td style={{ padding: "9px 10px" }}>{c.contact}</td>
                         <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{c.phone}</td>
                         <td style={{ padding: "9px 10px" }}>{c.city}</td>
@@ -1230,7 +1346,7 @@ export default function App() {
                   <tbody>
                     {transporters.map((t) => (
                       <tr key={t.id} style={{ borderTop: `1px solid ${LINE}`, background: editingTransporterId === t.id ? "#FBF2E0" : undefined }}>
-                        <td style={{ padding: "9px 10px", fontWeight: 500 }}>{t.name}</td>
+                        <td style={{ padding: "9px 10px", fontWeight: 500 }}>{t.name} {t.isDemo && <Tag text="DEMO" color={STEEL} />}</td>
                         <td style={{ padding: "9px 10px" }}>{t.driver}</td>
                         <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{t.mobile}</td>
                         <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{t.truckNo} &middot; {t.truckType}</td>
@@ -1346,6 +1462,7 @@ export default function App() {
                     <tr key={inv.serial} style={{ borderTop: `1px solid ${LINE}`, background: rowBg, borderLeft: `3px solid ${rowBorder}`, opacity: inv.carriedForward ? 0.65 : 1 }}>
                       <td style={{ padding: "9px 10px" }}>
                         <Stamp>#{inv.serial}</Stamp>
+                        {inv.isDemo && <div style={{ marginTop: 3 }}><Tag text="DEMO" color={STEEL} /></div>}
                         {inv.carriedForward && <div style={{ fontSize: 10.5, color: "#8A8574", marginTop: 3 }}>carried forward</div>}
                       </td>
                       <td style={{ padding: "9px 10px" }}>{customerById(inv.customerId)?.name || "—"}</td>
