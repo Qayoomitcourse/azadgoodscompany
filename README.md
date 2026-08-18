@@ -6,6 +6,21 @@ invoices) to Sanity instead of an in-memory array.
 
 ## Changelog (latest update)
 
+- **Owner-only login, real server-side security.** The app now opens
+  on a password screen (`src/Login.jsx`) — nobody can view or change
+  anything without it. Behind the scenes: `api/auth.js` (Vercel
+  Serverless Function) checks the password and issues a signed,
+  12-hour session; every write (new shipment, payment, edit, delete)
+  is now routed through `api/sanity-write.js`, which checks that
+  session and holds the real Sanity write token **server-side only**
+  — it's no longer bundled into the browser at all (the old
+  `VITE_SANITY_WRITE_TOKEN` approach is removed). Netlify equivalents
+  ship too in `netlify/functions/`, wired up via a redirect in
+  `netlify.toml`, in case you move platforms later. See section 3
+  below — this needs three new environment variables
+  (`OWNER_PASSWORD`, `AUTH_SECRET`, `SANITY_WRITE_TOKEN`) set in
+  Vercel, and, for local dev, running `vercel dev` instead of plain
+  `vite`.
 - **Demo/sample data, one click to load and one click to remove.** A new
   "Demo / test data" card on the Dashboard (`Load demo data`) creates 2
   sample customers, 2 sample transporters, 6 sample shipments (mixing
@@ -136,61 +151,91 @@ The app currently loads with **no data** until you add some — either
 through Sanity Studio, or through the app's own forms once writes are
 enabled (next section).
 
-## 3. Writes & security — read this before enabling them
+## 3. Owner login & writes & security — read this before deploying
 
-This app records real money: customer bills, transporter payments,
-settlements. `sanityData.js`'s `createDoc` / `patchDoc` / `removeDoc`
-need a Sanity API token with write access to function, and that token
-must not be visible to anyone who shouldn't be able to alter your
-books.
+The app is gated behind a single owner login (`src/Login.jsx`), and
+every write (new shipment, payment, edit, delete — anything that
+changes your data) is checked against that login server-side. Nobody
+can view or change anything without the password, and the actual
+Sanity write token never ships to the browser.
 
-You have two reasonable options:
+**This is deployed on Vercel**, so the login/write logic lives in
+`api/*.js` (Vercel Serverless Functions) — `api/auth.js` and
+`api/sanity-write.js`, sharing `api/_session.js`. (Netlify equivalents
+also ship in `netlify/functions/` with a `/api/*` redirect in
+`netlify.toml`, in case you ever move platforms — but on Vercel it's
+the `api/` folder that's actually live.)
 
-**A. Read-only app, edit in Studio (safer, simplest).**
-Don't set `VITE_SANITY_WRITE_TOKEN` at all. The dashboard, shipment
-list, and reports all work off the read-only CDN client. Staff make
-changes (new shipments, recording payments, etc.) directly in Sanity
-Studio, which has its own login. `sanityData.js` will throw a clear
-error if the app tries to write without a token — nothing fails
-silently.
+**How it works:**
+- `api/auth.js` checks the password you type against the
+  `OWNER_PASSWORD` environment variable (server-side only) and, if it
+  matches, issues a signed session token good for 12 hours.
+- That token is kept in the browser's `sessionStorage` (cleared when
+  the browser/tab is closed — so a shared/public computer doesn't stay
+  logged in) and sent with every write.
+- `api/sanity-write.js` is the only thing that holds the real
+  `SANITY_WRITE_TOKEN`. It checks the session token on every request
+  before creating, editing, or deleting anything in Sanity.
+- Reads (viewing the dashboard, shipments, reports) still go straight
+  to Sanity's public read-only CDN client, same as before — only
+  writes and the app itself require login.
 
-**B. Let the app write, but not from the browser.**
-Create a Netlify Function that holds a write token as a *server-side*
-environment variable (never prefixed `VITE_`, so it's never bundled
-into client code), and have `sanityData.js`'s write functions call
-that function instead of Sanity directly. This lets the in-app forms
-(new shipment, record payment, etc.) work as originally designed,
-without exposing the token.
+**You need three new environment variables**, set in Vercel's
+**Project Settings → Environment Variables** (never prefix these with
+`VITE_`, or they'd be bundled into the browser and visible to anyone):
 
-If you just want to get the whole thing working quickly to see it
-live, setting `VITE_SANITY_WRITE_TOKEN` directly (a token with
-Editor permissions, from Sanity's API settings) is the fastest path
-— just know that token becomes visible to anyone who inspects your
-site's JavaScript, so treat that as a temporary/internal-network
-setup, not a public launch.
+| Variable | What it is |
+|---|---|
+| `OWNER_PASSWORD` | The login password. Pick something long, not your Sanity token. |
+| `AUTH_SECRET` | Any long random string, e.g. `openssl rand -hex 32`. Signs sessions — changing it logs everyone out. |
+| `SANITY_WRITE_TOKEN` | A Sanity API token with **Editor** (write) permissions, from Sanity's API settings. |
 
-## 4. Deploy to Netlify
+Add them for all three environments Vercel offers (Production,
+Preview, Development) if you want previews and local `vercel dev` to
+also work, then **redeploy** — new env vars don't apply to already-built
+deployments.
 
-Push this project to a GitHub repo, then in Netlify:
-**Add new site → Import an existing project → GitHub → select the repo.**
+See `.env.example` for the full list, including local-dev notes.
 
-Netlify should auto-detect the settings in `netlify.toml`
-(`npm run build`, publish directory `dist`). In **Site settings →
-Environment variables**, add the same variables from your `.env`.
-Redeploy, then add the live Netlify URL to Sanity's CORS origins
-(step 2) so the deployed app can actually reach your data.
+**Local development:** plain `vite`/`npm run dev` won't serve the
+`/api/*` endpoints, so login and saving won't work locally. Install
+the Vercel CLI (`npm i -g vercel`, then `vercel link` once) and run
+`vercel dev` instead — it runs Vite and the API functions together on
+one local URL, reading env vars from `vercel env pull` or your linked
+project.
 
-## Deploying to Vercel instead
+**To change or add owner passwords later:** there's currently one
+shared password for "the owner." Update `OWNER_PASSWORD` in Vercel and
+redeploy (existing sessions stay valid until they expire, up to 12
+hours). If you'd like separate logins per staff member instead of one
+shared password, that's a bigger change (a small user list plus
+per-user passwords in `api/auth.js`) — let me know and I can build
+that out.
 
-`vercel.json` in this folder covers it. In Vercel: **Add New → Project
-→ import the GitHub repo.** It auto-detects Vite (build command
-`npm run build`, output `dist`) — the `vercel.json` just confirms
-that explicitly. Add the same `VITE_SANITY_PROJECT_ID` /
-`VITE_SANITY_DATASET` (and write token, if you're using one) under
-**Project Settings → Environment Variables**, then redeploy and add
-the resulting `*.vercel.app` URL to Sanity's CORS origins, same as
-the Netlify step. `netlify.toml` and `vercel.json` can both stay in
-the repo — each platform only reads its own file.
+## 4. Deploy to Vercel
+
+Push this project to a GitHub repo, then in Vercel: **Add New →
+Project → import the GitHub repo.** It auto-detects Vite (build
+command `npm run build`, output `dist`) and auto-detects the `api/`
+folder as Serverless Functions — no extra config needed beyond the
+environment variables above. Add `VITE_SANITY_PROJECT_ID` /
+`VITE_SANITY_DATASET` alongside the three server-side variables under
+**Project Settings → Environment Variables**, redeploy, then add the
+resulting `*.vercel.app` (and any custom domain) to Sanity's CORS
+origins (step 2) so the deployed app can actually reach your data.
+
+## Deploying to Netlify instead
+
+`netlify.toml` covers the static build and includes a `/api/* ->
+/.netlify/functions/:splat` redirect, so the same client code (which
+calls `/api/auth` and `/api/sanity-write`) works unchanged. The actual
+function code lives in `netlify/functions/` (mirrors of the `api/`
+files above). In Netlify: **Add new site → Import an existing project
+→ GitHub → select the repo.** Add the same environment variables
+(`VITE_SANITY_PROJECT_ID`, `VITE_SANITY_DATASET`, `OWNER_PASSWORD`,
+`AUTH_SECRET`, `SANITY_WRITE_TOKEN`) under **Site settings →
+Environment variables**, redeploy, and add the Netlify URL to Sanity's
+CORS origins.
 
 ## Notes on the data model
 

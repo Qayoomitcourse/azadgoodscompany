@@ -1,30 +1,35 @@
-import { client, writeClient } from "./sanityClient";
+import { client } from "./sanityClient";
+import { getToken } from "./auth";
 
 // All four document types share the same read/write shape, so these
 // helpers are generic rather than one-per-type. Every function maps
 // Sanity's `_id` to a plain `id` field, since the rest of the app
 // (ported from a local-state prototype) reads/writes `.id` everywhere.
+//
+// Reads go straight to Sanity's CDN (safe, read-only, no login needed).
+// Writes go through /.netlify/functions/sanity-write, which checks the
+// owner's session token and holds the real Sanity write token
+// server-side — see netlify/functions/sanity-write.js and README.md.
 
-function stripMeta(data) {
-  // Never send our local `id` (Sanity uses `_id`) or any `_`-prefixed
-  // system field back to Sanity as part of a patch/create payload.
-  const clean = { ...data };
-  delete clean.id;
-  Object.keys(clean).forEach((k) => {
-    if (k.startsWith("_")) delete clean[k];
-  });
-  return clean;
-}
-
-function requireWriteClient() {
-  if (!writeClient) {
-    throw new Error(
-      "No Sanity write token configured (VITE_SANITY_WRITE_TOKEN). " +
-        "Either set one (see README's security note first) or edit " +
-        "records in Sanity Studio instead."
-    );
+async function callWriteFn(op, extra) {
+  const token = getToken();
+  if (!token) {
+    throw new Error("You're not logged in as the owner, so this can't be saved. Please log in and try again.");
   }
-  return writeClient;
+  const res = await fetch("/api/sanity-write", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ op, ...extra }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("Your session expired. Please log in again.");
+    throw new Error(body.error || "Save failed.");
+  }
+  return body;
 }
 
 export async function fetchAll(type) {
@@ -56,14 +61,13 @@ export async function fetchAllTypes() {
 }
 
 export async function createDoc(type, data) {
-  const doc = await requireWriteClient().create({ _type: type, ...stripMeta(data) });
-  return { ...doc, id: doc._id };
+  return callWriteFn("create", { type, data });
 }
 
 export async function patchDoc(id, data) {
-  return requireWriteClient().patch(id).set(stripMeta(data)).commit();
+  return callWriteFn("patch", { id, data });
 }
 
 export async function removeDoc(id) {
-  return requireWriteClient().delete(id);
+  return callWriteFn("delete", { id });
 }
