@@ -663,11 +663,12 @@ function AppShell() {
 
   async function submitShipment(e) {
     e.preventDefault();
-    // Only Customer and Vehicle No. are mandatory — everything else on
-    // this form (transporter, rates, item, route, etc.) is optional and
-    // can be filled in / corrected later.
+    // Only Customer is mandatory. Vehicle No. comes from the selected
+    // transporter automatically (see the "new" form) — if no
+    // transporter is assigned yet, the order still saves fine, with
+    // status defaulting to Pending, and can be completed later from
+    // the Shipments page (Edit).
     if (!shipForm.customerId) { window.alert("Please select or add a customer company."); return; }
-    if (!shipForm.vehicleNo || !shipForm.vehicleNo.trim()) { window.alert("Vehicle No. is required."); return; }
     const clean = {
       ...shipForm,
       customerRate: Number(shipForm.customerRate) || 0,
@@ -711,7 +712,7 @@ function AppShell() {
     const data = { name: quickTransporter.name, driver: "", mobile: "", truckNo: quickTransporter.truckNo, truckType: quickTransporter.truckType };
     const t = await createDoc("transporter", data);
     setTransporters((prev) => [...prev, t]);
-    setShipForm((f) => ({ ...f, transporterId: t.id }));
+    setShipForm((f) => ({ ...f, transporterId: t.id, vehicleNo: t.truckNo || f.vehicleNo }));
     setQuickTransporter({ name: "", truckNo: "", truckType: "", normalRate: "" });
     setShowQuickTransporter(false);
   }
@@ -1131,10 +1132,6 @@ function AppShell() {
                   )}
                 </div>
 
-                <Field label={<>Vehicle No. <span style={{ color: RUST }}>*</span></>}>
-                  <input style={inputStyle} placeholder="e.g. JT-0194" value={shipForm.vehicleNo} onChange={(e) => setShipForm({ ...shipForm, vehicleNo: e.target.value })} required />
-                </Field>
-
                 <Field label="Required truck (type)">
                   <input style={inputStyle} placeholder="10 Wheeler" value={shipForm.truckType} onChange={(e) => setShipForm({ ...shipForm, truckType: e.target.value })} />
                 </Field>
@@ -1168,8 +1165,18 @@ function AppShell() {
                     <span style={{ fontSize: 12.5, color: "#5B5645" }}>Transporter</span>
                     <button type="button" onClick={() => setShowQuickTransporter((v) => !v)} style={{ ...iconBtn, fontSize: 11.5, color: STEEL }}>+ new</button>
                   </div>
-                  <select style={inputStyle} value={shipForm.transporterId} onChange={(e) => setShipForm({ ...shipForm, transporterId: e.target.value })}>
-                    <option value="">— none / not assigned yet —</option>
+                  <select
+                    style={inputStyle}
+                    value={shipForm.transporterId}
+                    onChange={(e) => {
+                      const t = transporterById(e.target.value);
+                      // Picking a transporter fills in its truck no. for you —
+                      // no need to type the same number twice. Still editable
+                      // below if this run uses a different vehicle.
+                      setShipForm((f) => ({ ...f, transporterId: e.target.value, vehicleNo: t ? t.truckNo || "" : f.vehicleNo }));
+                    }}
+                  >
+                    <option value="">— not assigned yet (order saved as Pending) —</option>
                     {transporters.map((t) => <option key={t.id} value={t.id}>{t.name} &mdash; {t.truckNo}</option>)}
                   </select>
                   {showQuickTransporter && (
@@ -1181,6 +1188,10 @@ function AppShell() {
                     </div>
                   )}
                 </div>
+
+                <Field label={shipForm.transporterId ? "Vehicle No. (from transporter, editable)" : "Vehicle No. (optional until a transporter is assigned)"}>
+                  <input style={inputStyle} placeholder="e.g. JT-0194" value={shipForm.vehicleNo} onChange={(e) => setShipForm({ ...shipForm, vehicleNo: e.target.value })} />
+                </Field>
 
                 <Field label="Transporter rate (cost)">
                   <input style={inputStyle} type="number" placeholder="27000" value={shipForm.transporterRate} onChange={(e) => setShipForm({ ...shipForm, transporterRate: e.target.value })} />
@@ -1278,7 +1289,7 @@ function AppShell() {
                           </span>
                         ) : (
                           <>
-                            <button onClick={() => startEdit(s)} style={iconBtn} title="Edit"><Pencil size={14} color={STEEL} /></button>
+                            <button onClick={() => startEdit(s)} style={{ ...btnGhost, padding: "4px 9px", marginRight: 4 }} title="Edit this shipment"><Pencil size={13} /> Edit</button>
                             <button onClick={() => deleteShipment(s.id)} style={iconBtn} title="Delete"><Trash2 size={14} color={RUST} /></button>
                           </>
                         )}
@@ -1519,6 +1530,29 @@ function AppShell() {
                 </select>
               </Field>
             </div>
+            {settleRows.length > 0 && (() => {
+              const totalAgreed = settleRows.reduce((a, s) => a + (s.transporterRate || 0), 0);
+              const totalPaid = settleRows.reduce((a, s) => a + (s.transporterPaid || 0), 0);
+              const totalPending = totalAgreed - totalPaid;
+              const paidCount = settleRows.filter((s) => (s.transporterRate || 0) > 0 && (s.transporterPaid || 0) >= (s.transporterRate || 0)).length;
+              return (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 16 }}>
+                  <Card style={{ padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, color: "#8A8574", textTransform: "uppercase", letterSpacing: 0.3 }}>Total agreed cost</div>
+                    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 600, marginTop: 3 }}>{pkr(totalAgreed)}</div>
+                  </Card>
+                  <Card style={{ padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, color: "#8A8574", textTransform: "uppercase", letterSpacing: 0.3 }}>Paid so far</div>
+                    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 600, marginTop: 3, color: GREEN }}>{pkr(totalPaid)}</div>
+                    <div style={{ fontSize: 11, color: "#8A8574", marginTop: 2 }}>{paidCount} of {settleRows.length} shipments fully paid</div>
+                  </Card>
+                  <Card style={{ padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, color: "#8A8574", textTransform: "uppercase", letterSpacing: 0.3 }}>Still pending</div>
+                    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 600, marginTop: 3, color: totalPending > 0 ? RUST : GREEN }}>{pkr(totalPending)}</div>
+                  </Card>
+                </div>
+              );
+            })()}
             <Card style={{ padding: 0, overflow: "hidden" }}>
               <div className="table-scroll"><table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse", fontSize: 12.8 }}>
                 <thead>
