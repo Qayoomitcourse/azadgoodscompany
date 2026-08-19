@@ -6,20 +6,28 @@ invoices) to Sanity instead of an in-memory array.
 
 ## Changelog (latest update)
 
-- **Owner-only login, real server-side security.** The app now opens
-  on a password screen (`src/Login.jsx`) — nobody can view or change
-  anything without it. Behind the scenes: `api/auth.js` (Vercel
-  Serverless Function) checks the password and issues a signed,
-  12-hour session; every write (new shipment, payment, edit, delete)
-  is now routed through `api/sanity-write.js`, which checks that
-  session and holds the real Sanity write token **server-side only**
-  — it's no longer bundled into the browser at all (the old
-  `VITE_SANITY_WRITE_TOKEN` approach is removed). Netlify equivalents
-  ship too in `netlify/functions/`, wired up via a redirect in
-  `netlify.toml`, in case you move platforms later. See section 3
-  below — this needs three new environment variables
-  (`OWNER_PASSWORD`, `AUTH_SECRET`, `SANITY_WRITE_TOKEN`) set in
-  Vercel, and, for local dev, running `vercel dev` instead of plain
+- **Login moved out of the app entirely, onto its own static page.**
+  Visiting the site now first loads `index.html` — a plain HTML/CSS/JS
+  page with the password form, no React involved — and only after a
+  successful login does it send you to `/app.html`, the real
+  application (previously `index.html`). This replaces the earlier
+  in-app login screen, which could be skipped if a browser or CDN
+  served a stale cached copy of the app's JavaScript bundle; a static
+  front-door page removes that failure mode entirely.
+  `vite.config.js` now builds two real HTML entry points instead of
+  one, and `vercel.json` / `netlify.toml` mark both as never-cached.
+  `src/App.jsx`'s login check is now a backup only (bounces to `/` if
+  your session is missing/expired) — the actual gate is the page you
+  land on first. `src/Login.jsx` was removed since it's no longer used.
+- **Owner-only login, real server-side security.** Every write (new
+  shipment, payment, edit, delete) is routed through
+  `api/sanity-write.js`, which checks your session and holds the real
+  Sanity write token **server-side only** — it's never bundled into
+  the browser (the old `VITE_SANITY_WRITE_TOKEN` approach is removed).
+  Netlify equivalents ship too in `netlify/functions/`, in case you
+  move platforms. See section 3 below — this needs three environment
+  variables (`OWNER_PASSWORD`, `AUTH_SECRET`, `SANITY_WRITE_TOKEN`) set
+  in Vercel, and, for local dev, running `vercel dev` instead of plain
   `vite`.
 - **Demo/sample data, one click to load and one click to remove.** A new
   "Demo / test data" card on the Dashboard (`Load demo data`) creates 2
@@ -153,89 +161,81 @@ enabled (next section).
 
 ## 3. Owner login & writes & security — read this before deploying
 
-The app is gated behind a single owner login (`src/Login.jsx`), and
-every write (new shipment, payment, edit, delete — anything that
-changes your data) is checked against that login server-side. Nobody
-can view or change anything without the password, and the actual
-Sanity write token never ships to the browser.
+**How you reach the app has changed:** the site's root URL (`/`) is now
+a plain, static login page (`index.html` — no React, no JS bundle to
+go stale). Enter the owner password there; on success it sends you to
+`/app.html`, which is the actual application. This two-page split
+(login page vs. app page, as real separate files) exists specifically
+so the password check can never be skipped by a stale cached copy of
+the app's JavaScript — a problem the earlier in-app version had.
 
-**This is deployed on Vercel**, so the login/write logic lives in
-`api/*.js` (Vercel Serverless Functions) — `api/auth.js` and
-`api/sanity-write.js`, sharing `api/_session.js`. (Netlify equivalents
-also ship in `netlify/functions/` with a `/api/*` redirect in
-`netlify.toml`, in case you ever move platforms — but on Vercel it's
-the `api/` folder that's actually live.)
+- `api/auth.js` checks the password against `OWNER_PASSWORD`
+  (server-side env var) and issues a signed session token good for 12
+  hours, stored in the browser's `sessionStorage` (cleared when the
+  tab/browser closes).
+- `app.html` (the React app) checks for that session on load; if it's
+  missing or expired, it immediately bounces back to `/` rather than
+  showing anything. This is a backup check — the real gate is `/`
+  itself, since nothing about the app ever loads before login now.
+- Every write (new shipment, payment, edit, delete) goes through
+  `api/sanity-write.js`, which re-checks the session token and holds
+  the real `SANITY_WRITE_TOKEN` **server-side only** — it's never
+  bundled into the browser.
+- Reads (viewing the dashboard, shipments, reports) go straight to
+  Sanity's public read-only CDN client, same as before.
 
-**How it works:**
-- `api/auth.js` checks the password you type against the
-  `OWNER_PASSWORD` environment variable (server-side only) and, if it
-  matches, issues a signed session token good for 12 hours.
-- That token is kept in the browser's `sessionStorage` (cleared when
-  the browser/tab is closed — so a shared/public computer doesn't stay
-  logged in) and sent with every write.
-- `api/sanity-write.js` is the only thing that holds the real
-  `SANITY_WRITE_TOKEN`. It checks the session token on every request
-  before creating, editing, or deleting anything in Sanity.
-- Reads (viewing the dashboard, shipments, reports) still go straight
-  to Sanity's public read-only CDN client, same as before — only
-  writes and the app itself require login.
-
-**You need three new environment variables**, set in Vercel's
-**Project Settings → Environment Variables** (never prefix these with
-`VITE_`, or they'd be bundled into the browser and visible to anyone):
+**You need three environment variables**, set in Vercel's **Project
+Settings → Environment Variables** (never prefix these with `VITE_`):
 
 | Variable | What it is |
 |---|---|
 | `OWNER_PASSWORD` | The login password. Pick something long, not your Sanity token. |
-| `AUTH_SECRET` | Any long random string, e.g. `openssl rand -hex 32`. Signs sessions — changing it logs everyone out. |
+| `AUTH_SECRET` | Any long random string, e.g. `openssl rand -hex 32` (or, on Windows without openssl: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`). Signs sessions — changing it logs everyone out. |
 | `SANITY_WRITE_TOKEN` | A Sanity API token with **Editor** (write) permissions, from Sanity's API settings. |
 
-Add them for all three environments Vercel offers (Production,
-Preview, Development) if you want previews and local `vercel dev` to
-also work, then **redeploy** — new env vars don't apply to already-built
-deployments.
+Add them for Production + Preview + Development, then **redeploy** —
+new env vars don't apply to an already-built deployment.
 
 See `.env.example` for the full list, including local-dev notes.
 
-**Local development:** plain `vite`/`npm run dev` won't serve the
-`/api/*` endpoints, so login and saving won't work locally. Install
-the Vercel CLI (`npm i -g vercel`, then `vercel link` once) and run
-`vercel dev` instead — it runs Vite and the API functions together on
-one local URL, reading env vars from `vercel env pull` or your linked
-project.
+**Local development:** plain `vite`/`npm run dev` won't serve `/api/*`,
+so login and saving won't work locally. Install the Vercel CLI
+(`npm i -g vercel`, then `vercel link` once) and run `vercel dev`
+instead.
 
-**To change or add owner passwords later:** there's currently one
-shared password for "the owner." Update `OWNER_PASSWORD` in Vercel and
-redeploy (existing sessions stay valid until they expire, up to 12
-hours). If you'd like separate logins per staff member instead of one
-shared password, that's a bigger change (a small user list plus
-per-user passwords in `api/auth.js`) — let me know and I can build
-that out.
+**To log out:** click "Log out" at the bottom of the sidebar inside
+the app — it clears your session and sends you back to `/`.
+
+**To change the password later:** update `OWNER_PASSWORD` in Vercel
+and redeploy. Existing sessions stay valid until they expire (up to 12
+hours). For separate logins per staff member instead of one shared
+password, that's a bigger change — ask if you'd like that built.
 
 ## 4. Deploy to Vercel
 
 Push this project to a GitHub repo, then in Vercel: **Add New →
 Project → import the GitHub repo.** It auto-detects Vite (build
-command `npm run build`, output `dist`) and auto-detects the `api/`
-folder as Serverless Functions — no extra config needed beyond the
-environment variables above. Add `VITE_SANITY_PROJECT_ID` /
-`VITE_SANITY_DATASET` alongside the three server-side variables under
-**Project Settings → Environment Variables**, redeploy, then add the
-resulting `*.vercel.app` (and any custom domain) to Sanity's CORS
-origins (step 2) so the deployed app can actually reach your data.
+command `npm run build`, output `dist`, two HTML entry points per
+`vite.config.js`) and auto-detects the `api/` folder as Serverless
+Functions — no extra config needed beyond the environment variables
+above. Add `VITE_SANITY_PROJECT_ID` / `VITE_SANITY_DATASET` alongside
+the three server-side variables under **Project Settings →
+Environment Variables**, redeploy, then add the resulting
+`*.vercel.app` (and any custom domain) to Sanity's CORS origins
+(step 2) so the deployed app can actually reach your data.
 
 ## Deploying to Netlify instead
 
-`netlify.toml` covers the static build and includes a `/api/* ->
-/.netlify/functions/:splat` redirect, so the same client code (which
-calls `/api/auth` and `/api/sanity-write`) works unchanged. The actual
-function code lives in `netlify/functions/` (mirrors of the `api/`
-files above). In Netlify: **Add new site → Import an existing project
-→ GitHub → select the repo.** Add the same environment variables
-(`VITE_SANITY_PROJECT_ID`, `VITE_SANITY_DATASET`, `OWNER_PASSWORD`,
-`AUTH_SECRET`, `SANITY_WRITE_TOKEN`) under **Site settings →
-Environment variables**, redeploy, and add the Netlify URL to Sanity's
-CORS origins.
+`netlify.toml` covers the static build, headers, and includes a
+`/api/* -> /.netlify/functions/:splat` redirect, so the same client
+code (which calls `/api/auth` and `/api/sanity-write`) works
+unchanged. The actual function code lives in `netlify/functions/`
+(mirrors of the `api/` files above). In Netlify: **Add new site →
+Import an existing project → GitHub → select the repo.** Add the same
+environment variables (`VITE_SANITY_PROJECT_ID`, `VITE_SANITY_DATASET`,
+`OWNER_PASSWORD`, `AUTH_SECRET`, `SANITY_WRITE_TOKEN`) under **Site
+settings → Environment variables**, redeploy, and add the Netlify URL
+to Sanity's CORS origins.
 
 ## Notes on the data model
 

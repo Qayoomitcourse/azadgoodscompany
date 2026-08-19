@@ -18,8 +18,10 @@ import {
   Archive,
   Eye,
   FlaskConical,
+  LogOut,
 } from "lucide-react";
 import { fetchAllTypes, createDoc, patchDoc, removeDoc } from "./sanityData";
+import { logout, isLoggedIn } from "./auth";
 
 const CACHE_KEY = "azad-transport-cache-v1";
 
@@ -441,7 +443,7 @@ function PrintReport({ data, onClose }) {
   );
 }
 
-export default function App() {
+function AppShell() {
   const [view, setView] = useState("dashboard");
   const [customers, setCustomers] = useState([]);
   const [transporters, setTransporters] = useState([]);
@@ -1036,11 +1038,17 @@ export default function App() {
           );
         })}
         {refreshing && (
-          <div style={{ marginTop: "auto", padding: "8px 10px", fontSize: 10.5, color: "#8A8574", display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ marginTop: refreshing ? undefined : "auto", padding: "8px 10px", fontSize: 10.5, color: "#8A8574", display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: AMBER, animation: "agt-spin 1s linear infinite" }} />
             Syncing…
           </div>
         )}
+        <button
+          onClick={() => { logout(); window.location.replace("/"); }}
+          style={{ marginTop: "auto", display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", border: "none", borderRadius: 4, background: "transparent", color: "#8A8574", fontSize: 12.5, fontFamily: "'Inter', sans-serif", cursor: "pointer", textAlign: "left" }}
+        >
+          <LogOut size={14} /> Log out
+        </button>
       </div>
 
       <div className="main-content" style={{ flex: 1, padding: "24px 32px", maxWidth: 1080 }}>
@@ -1614,4 +1622,23 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+// ---- owner-only login gate ----
+// The real front door is the static index.html at "/" (see that file).
+// This is a second, defense-in-depth check: app.html should only ever
+// be reached with a valid session already in place, but if it isn't
+// (session expired, someone bookmarked /app.html directly, etc.) we
+// bounce back to "/" rather than rendering anything from the app.
+export default function App() {
+  const [loggedIn] = useState(isLoggedIn());
+
+  useEffect(() => {
+    if (!loggedIn) {
+      window.location.replace("/");
+    }
+  }, [loggedIn]);
+
+  if (!loggedIn) return null;
+  return <AppShell />;
 }
