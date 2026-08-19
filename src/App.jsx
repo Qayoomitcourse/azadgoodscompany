@@ -35,6 +35,11 @@ const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Oswal
 const RESPONSIVE_CSS = `
   * { box-sizing: border-box; }
   @keyframes agt-spin { to { transform: rotate(360deg); } }
+  /* Tables scroll horizontally inside their card on every screen size —
+     without this, columns past the visible width (e.g. Bill # / Edit /
+     Delete on the Shipments table) get clipped by the card's rounded
+     corners on wide screens with no way to reach them. */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   @media (max-width: 880px) {
     .app-shell { flex-direction: column !important; }
     .sidebar {
@@ -67,7 +72,6 @@ const RESPONSIVE_CSS = `
       grid-template-columns: 1fr !important;
       row-gap: 4px !important;
     }
-    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   }
   @media (max-width: 480px) {
     .metrics-grid, .metrics-grid-4 { grid-template-columns: 1fr !important; }
