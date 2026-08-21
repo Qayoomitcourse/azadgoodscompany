@@ -632,12 +632,14 @@ function AppShell() {
 
   // ---- shipments tab: select orders directly, generate & print bill on the spot ----
   const [selectedShipmentIds, setSelectedShipmentIds] = useState({});
+  const [shipmentCustomerFilter, setShipmentCustomerFilter] = useState("");
   function toggleShipmentSelect(id) {
     setSelectedShipmentIds((m) => ({ ...m, [id]: !m[id] }));
   }
   function clearShipmentSelection() {
     setSelectedShipmentIds({});
   }
+  const shipmentsForView = shipmentCustomerFilter ? enriched.filter((s) => s.customerId === shipmentCustomerFilter) : enriched;
   const selectedShipmentRows = enriched.filter((s) => selectedShipmentIds[s.id] && !s.invoiceSerial);
   const selectedShipmentCustomerIds = [...new Set(selectedShipmentRows.map((s) => s.customerId))];
   const selectedShipmentMixedCustomers = selectedShipmentCustomerIds.length > 1;
@@ -1256,9 +1258,17 @@ function AppShell() {
         {view === "shipments" && (
           <>
             <h1 style={{ fontFamily: "'Oswald', sans-serif", fontSize: 22, margin: "0 0 6px" }}>Shipments</h1>
-            <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 12, fontSize: 12, color: "#6B6656" }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "#FBEED4", border: `1px solid ${AMBER}` }} /> Invoice generated</span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "#E6EEE2", border: `1px solid ${GREEN}` }} /> Marked billed manually</span>
+            <div style={{ display: "flex", gap: 14, alignItems: "flex-end", marginBottom: 12, flexWrap: "wrap" }}>
+              <Field label="Customer">
+                <select style={inputStyle} value={shipmentCustomerFilter} onChange={(e) => setShipmentCustomerFilter(e.target.value)}>
+                  <option value="">All customers</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </Field>
+              <div style={{ display: "flex", gap: 16, alignItems: "center", fontSize: 12, color: "#6B6656" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "#FBEED4", border: `1px solid ${AMBER}` }} /> Invoice generated</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "#E6EEE2", border: `1px solid ${GREEN}` }} /> Marked billed manually</span>
+              </div>
             </div>
 
             {selectedShipmentRows.length > 0 && (
@@ -1299,7 +1309,7 @@ function AppShell() {
                   </tr>
                 </thead>
                 <tbody>
-                  {enriched.map((s) => {
+                  {shipmentsForView.map((s) => {
                     const locked = !!s.invoiceSerial; // bill generated for this shipment — view only
                     const rowBg = locked ? "#FBF2E0" : s.invoiced ? "#EEF3EA" : "transparent";
                     const rowBorder = locked ? AMBER : s.invoiced ? GREEN : "transparent";
@@ -1368,6 +1378,9 @@ function AppShell() {
                     </tr>
                     );
                   })}
+                  {shipmentsForView.length === 0 && (
+                    <tr><td colSpan={13} style={{ padding: "16px 10px", color: "#8A8574", textAlign: "center" }}>No shipments{shipmentCustomerFilter ? " for this customer" : ""}.</td></tr>
+                  )}
                 </tbody>
               </table></div>
             </Card>
