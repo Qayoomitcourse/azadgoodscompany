@@ -630,6 +630,19 @@ function AppShell() {
   const payable = shipments.reduce((a, s) => a + (s.transporterRate - (s.transporterPaid || 0)), 0);
   const uninvoicedCount = shipments.filter((s) => !s.invoiced).length;
 
+  // ---- shipments tab: select orders directly, generate & print bill on the spot ----
+  const [selectedShipmentIds, setSelectedShipmentIds] = useState({});
+  function toggleShipmentSelect(id) {
+    setSelectedShipmentIds((m) => ({ ...m, [id]: !m[id] }));
+  }
+  function clearShipmentSelection() {
+    setSelectedShipmentIds({});
+  }
+  const selectedShipmentRows = enriched.filter((s) => selectedShipmentIds[s.id] && !s.invoiceSerial);
+  const selectedShipmentCustomerIds = [...new Set(selectedShipmentRows.map((s) => s.customerId))];
+  const selectedShipmentMixedCustomers = selectedShipmentCustomerIds.length > 1;
+  const selectedShipmentTotal = selectedShipmentRows.reduce((a, s) => a + s.total, 0);
+
   // ---- dashboard period filter ----
   const [dashFrom, setDashFrom] = useState("");
   const [dashTo, setDashTo] = useState("");
@@ -841,23 +854,27 @@ function AppShell() {
     }));
   }
 
-  async function generateBill() {
-    if (selectedRows.length === 0) return;
-    const senderName = customerById(billCustomer)?.name || "";
-    const rows = buildBillRows(selectedRows, senderName);
+  // Shared by both the Shipments tab (select orders, generate on the spot) and
+  // the Print bill tab (pick a customer + period first) — either flow ends up
+  // here with a concrete list of shipments and a single customer.
+  async function generateBillForShipments(shipmentList, customerId) {
+    if (shipmentList.length === 0) return;
+    const senderName = customerById(customerId)?.name || "";
+    const rows = buildBillRows(shipmentList, senderName);
+    const total = shipmentList.reduce((a, s) => a + s.total, 0);
     const genDate = todayISO();
     const serial = invoiceSerialStr(invoiceSerial, genDate);
-    const shipmentIds = selectedRows.map((s) => s.id);
+    const shipmentIds = shipmentList.map((s) => s.id);
 
     // any of this customer's earlier bills that are still outstanding and not already
     // carried forward onto a later bill get rolled into this one, referenced by bill #.
     const outstanding = invoices.filter(
-      (i) => i.customerId === billCustomer && !i.carriedForward && i.total - (i.payment?.amount || 0) > 0
+      (i) => i.customerId === customerId && !i.carriedForward && i.total - (i.payment?.amount || 0) > 0
     );
     const previousBalance = outstanding.reduce((a, i) => a + (i.total - (i.payment?.amount || 0)), 0);
     const previousBalanceRefs = outstanding.map((i) => i.serial);
 
-    const newInvoiceData = { serial, customerId: billCustomer, generatedDate: genDate, shipmentIds, total: selectedTotal, payment: null, previousBalance, previousBalanceRefs, carriedForward: false };
+    const newInvoiceData = { serial, customerId, generatedDate: genDate, shipmentIds, total, payment: null, previousBalance, previousBalanceRefs, carriedForward: false };
     const created = await createDoc("invoice", newInvoiceData);
 
     await Promise.all([
@@ -865,13 +882,24 @@ function AppShell() {
       ...outstanding.map((i) => patchDoc(i.id, { carriedForward: true })),
     ]);
 
-    setShipments((prev) => prev.map((s) => (selectedIds[s.id] ? { ...s, invoiced: true, invoiceSerial: serial } : s)));
+    setShipments((prev) => prev.map((s) => (shipmentIds.includes(s.id) ? { ...s, invoiced: true, invoiceSerial: serial } : s)));
     setInvoices((prev) => [
       ...prev.map((i) => (previousBalanceRefs.includes(i.serial) ? { ...i, carriedForward: true } : i)),
       created,
     ]);
-    setPrintBillData({ serial, customerName: senderName, rows, grandTotal: selectedTotal, previousBalance, previousBalanceRefs });
+    setPrintBillData({ serial, customerName: senderName, rows, grandTotal: total, previousBalance, previousBalanceRefs });
     setInvoiceSerial((n) => n + 1);
+    return serial;
+  }
+
+  async function generateBill() {
+    await generateBillForShipments(selectedRows, billCustomer);
+  }
+
+  async function generateBillFromShipmentsTab() {
+    if (selectedShipmentRows.length === 0 || selectedShipmentMixedCustomers) return;
+    await generateBillForShipments(selectedShipmentRows, selectedShipmentCustomerIds[0]);
+    clearShipmentSelection();
   }
 
   function reopenInvoice(inv) {
@@ -1232,10 +1260,39 @@ function AppShell() {
               <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "#FBEED4", border: `1px solid ${AMBER}` }} /> Invoice generated</span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "#E6EEE2", border: `1px solid ${GREEN}` }} /> Marked billed manually</span>
             </div>
+
+            {selectedShipmentRows.length > 0 && (
+              <Card style={{ marginBottom: 14, padding: "12px 16px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", background: "#FBF6E8", border: `1.5px solid ${AMBER}` }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5 }}>
+                  {selectedShipmentRows.length} order{selectedShipmentRows.length > 1 ? "s" : ""} selected
+                </div>
+                {selectedShipmentMixedCustomers ? (
+                  <div style={{ color: RUST, fontSize: 12.5 }}>
+                    Selected orders belong to different customers — a bill can only be generated for one customer at a time. Uncheck orders until only one customer remains.
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12.5, color: "#6B6656" }}>
+                    Customer: <b>{customerById(selectedShipmentCustomerIds[0])?.name || "—"}</b>
+                    &nbsp;&middot;&nbsp; Total: <b style={{ fontFamily: "'IBM Plex Mono', monospace", color: STEEL }}>{pkr(selectedShipmentTotal)}</b>
+                  </div>
+                )}
+                <div style={{ flex: 1 }} />
+                <button style={btnGhost} onClick={clearShipmentSelection}><X size={14} /> Clear</button>
+                <button
+                  style={{ ...btnPrimary, opacity: selectedShipmentMixedCustomers ? 0.5 : 1 }}
+                  onClick={generateBillFromShipmentsTab}
+                  disabled={selectedShipmentMixedCustomers}
+                >
+                  <Printer size={14} /> Generate &amp; print bill
+                </button>
+              </Card>
+            )}
+
             <Card style={{ padding: 0, overflow: "hidden" }}>
-              <div className="table-scroll"><table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse", fontSize: 12.8 }}>
+              <div className="table-scroll"><table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse", fontSize: 12.8 }}>
                 <thead>
                   <tr style={{ background: "#EDE9DB", textAlign: "left" }}>
+                    <th style={{ padding: "9px 10px", width: 30 }}></th>
                     {["Order", "Date", "Customer", "Vehicle No.", "Route", "Customer rate", "Transporter", "Cost", "Transporter paid", "Margin", "Status", "Bill #", ""].map((h) => (
                       <th key={h} style={{ padding: "9px 10px", fontWeight: 600, color: "#5B5645", fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                     ))}
@@ -1250,6 +1307,16 @@ function AppShell() {
                     const transporterBalance = s.transporterRate - (s.transporterPaid || 0);
                     return (
                     <tr key={s.id} style={{ borderTop: `1px solid ${LINE}`, background: rowBg, borderLeft: `3px solid ${rowBorder}` }}>
+                      <td style={{ padding: "9px 10px" }}>
+                        {!locked && (
+                          <input
+                            type="checkbox"
+                            checked={!!selectedShipmentIds[s.id]}
+                            onChange={() => toggleShipmentSelect(s.id)}
+                            title="Select to include in a bill"
+                          />
+                        )}
+                      </td>
                       <td style={{ padding: "9px 10px" }}><Stamp>{s.orderNo}</Stamp>{s.isDemo && <div style={{ marginTop: 3 }}><Tag text="DEMO" color={STEEL} /></div>}</td>
                       <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{s.date}</td>
                       <td style={{ padding: "9px 10px" }}>{customerById(s.customerId)?.name || "—"}</td>
