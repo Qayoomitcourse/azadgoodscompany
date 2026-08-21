@@ -741,43 +741,52 @@ function AppShell() {
 
   // Generates a bill/invoice for a set of shipments belonging to one customer — used
   // by the Shipments tab (select orders, generate & print on the spot).
+  // billBusy guards against double-clicks / a slow connection: without it, clicking
+  // the button twice before the first request finishes created two invoices for the
+  // same shipment(s).
+  const [billBusy, setBillBusy] = useState(false);
   async function generateBillForShipments(shipmentList, customerId) {
-    if (shipmentList.length === 0) return;
-    const senderName = customerById(customerId)?.name || "";
-    const rows = buildBillRows(shipmentList, senderName);
-    const total = shipmentList.reduce((a, s) => a + s.total, 0);
-    const genDate = todayISO();
-    const serial = invoiceSerialStr(invoiceSerial, genDate);
-    const shipmentIds = shipmentList.map((s) => s.id);
+    if (shipmentList.length === 0 || billBusy) return;
+    setBillBusy(true);
+    try {
+      const senderName = customerById(customerId)?.name || "";
+      const rows = buildBillRows(shipmentList, senderName);
+      const total = shipmentList.reduce((a, s) => a + s.total, 0);
+      const genDate = todayISO();
+      const serial = invoiceSerialStr(invoiceSerial, genDate);
+      const shipmentIds = shipmentList.map((s) => s.id);
 
-    // any of this customer's earlier bills that are still outstanding and not already
-    // carried forward onto a later bill get rolled into this one, referenced by bill #.
-    const outstanding = invoices.filter(
-      (i) => i.customerId === customerId && !i.carriedForward && i.total - (i.payment?.amount || 0) > 0
-    );
-    const previousBalance = outstanding.reduce((a, i) => a + (i.total - (i.payment?.amount || 0)), 0);
-    const previousBalanceRefs = outstanding.map((i) => i.serial);
+      // any of this customer's earlier bills that are still outstanding and not already
+      // carried forward onto a later bill get rolled into this one, referenced by bill #.
+      const outstanding = invoices.filter(
+        (i) => i.customerId === customerId && !i.carriedForward && i.total - (i.payment?.amount || 0) > 0
+      );
+      const previousBalance = outstanding.reduce((a, i) => a + (i.total - (i.payment?.amount || 0)), 0);
+      const previousBalanceRefs = outstanding.map((i) => i.serial);
 
-    const newInvoiceData = { serial, customerId, generatedDate: genDate, shipmentIds, total, payment: null, previousBalance, previousBalanceRefs, carriedForward: false };
-    const created = await createDoc("invoice", newInvoiceData);
+      const newInvoiceData = { serial, customerId, generatedDate: genDate, shipmentIds, total, payment: null, previousBalance, previousBalanceRefs, carriedForward: false };
+      const created = await createDoc("invoice", newInvoiceData);
 
-    await Promise.all([
-      ...shipmentIds.map((id) => patchDoc(id, { invoiced: true, invoiceSerial: serial })),
-      ...outstanding.map((i) => patchDoc(i.id, { carriedForward: true })),
-    ]);
+      await Promise.all([
+        ...shipmentIds.map((id) => patchDoc(id, { invoiced: true, invoiceSerial: serial })),
+        ...outstanding.map((i) => patchDoc(i.id, { carriedForward: true })),
+      ]);
 
-    setShipments((prev) => prev.map((s) => (shipmentIds.includes(s.id) ? { ...s, invoiced: true, invoiceSerial: serial } : s)));
-    setInvoices((prev) => [
-      ...prev.map((i) => (previousBalanceRefs.includes(i.serial) ? { ...i, carriedForward: true } : i)),
-      created,
-    ]);
-    setPrintBillData({ serial, customerName: senderName, rows, grandTotal: total, previousBalance, previousBalanceRefs });
-    setInvoiceSerial((n) => n + 1);
-    return serial;
+      setShipments((prev) => prev.map((s) => (shipmentIds.includes(s.id) ? { ...s, invoiced: true, invoiceSerial: serial } : s)));
+      setInvoices((prev) => [
+        ...prev.map((i) => (previousBalanceRefs.includes(i.serial) ? { ...i, carriedForward: true } : i)),
+        created,
+      ]);
+      setPrintBillData({ serial, customerName: senderName, rows, grandTotal: total, previousBalance, previousBalanceRefs });
+      setInvoiceSerial((n) => n + 1);
+      return serial;
+    } finally {
+      setBillBusy(false);
+    }
   }
 
   async function generateBillFromShipmentsTab() {
-    if (selectedShipmentRows.length === 0 || selectedShipmentMixedCustomers) return;
+    if (selectedShipmentRows.length === 0 || selectedShipmentMixedCustomers || billBusy) return;
     await generateBillForShipments(selectedShipmentRows, selectedShipmentCustomerIds[0]);
     clearShipmentSelection();
   }
@@ -791,20 +800,49 @@ function AppShell() {
   }
 
   async function deleteInvoice(serial) {
-    if (!window.confirm(`Delete bill #${serial}? Its shipments will go back to "not invoiced" so you can correct and re-bill them.`)) return;
     const inv = invoices.find((i) => i.serial === serial);
+    // bills whose "brought forward" balance included this one — deleting it needs to
+    // correct their previousBalance/previousBalanceRefs too, or they'd point at a
+    // now-deleted bill number forever.
+    const dependents = invoices.filter((i) => (i.previousBalanceRefs || []).includes(serial));
+    const warnDependents = dependents.length > 0
+      ? ` This bill's balance was carried forward into bill${dependents.length > 1 ? "s" : ""} #${dependents.map((d) => d.serial).join(", #")} — those will be adjusted automatically.`
+      : "";
+    if (!window.confirm(`Delete bill #${serial}? Its shipments will go back to "not invoiced" so you can correct and re-bill them.${warnDependents}`)) return;
+
     const refs = inv?.previousBalanceRefs || [];
     const affectedShipmentIds = shipments.filter((s) => s.invoiceSerial === serial).map((s) => s.id);
     const releasedInvoiceIds = invoices.filter((i) => refs.includes(i.serial)).map((i) => i.id);
+
+    // recompute each dependent's carried-forward balance from what's still actually
+    // outstanding on its remaining referenced bills, now that this one is gone.
+    const dependentUpdates = dependents.map((d) => {
+      const newRefs = (d.previousBalanceRefs || []).filter((r) => r !== serial);
+      const newPreviousBalance = newRefs.reduce((a, r) => {
+        const ref = invoices.find((i) => i.serial === r);
+        return ref ? a + Math.max(0, ref.total - (ref.payment?.amount || 0)) : a;
+      }, 0);
+      return { id: d.id, serial: d.serial, previousBalanceRefs: newRefs, previousBalance: newPreviousBalance };
+    });
 
     if (inv) await removeDoc(inv.id);
     await Promise.all([
       ...affectedShipmentIds.map((id) => patchDoc(id, { invoiced: false, invoiceSerial: null })),
       ...releasedInvoiceIds.map((id) => patchDoc(id, { carriedForward: false })),
+      ...dependentUpdates.map((d) => patchDoc(d.id, { previousBalanceRefs: d.previousBalanceRefs, previousBalance: d.previousBalance })),
     ]);
 
     setShipments((prev) => prev.map((s) => (s.invoiceSerial === serial ? { ...s, invoiced: false, invoiceSerial: null } : s)));
-    setInvoices((prev) => prev.filter((i) => i.serial !== serial).map((i) => (refs.includes(i.serial) ? { ...i, carriedForward: false } : i)));
+    setInvoices((prev) =>
+      prev
+        .filter((i) => i.serial !== serial)
+        .map((i) => {
+          if (refs.includes(i.serial)) i = { ...i, carriedForward: false };
+          const dep = dependentUpdates.find((d) => d.serial === i.serial);
+          if (dep) i = { ...i, previousBalanceRefs: dep.previousBalanceRefs, previousBalance: dep.previousBalance };
+          return i;
+        })
+    );
   }
 
   function recordCustomerPayment(serial, payment) {
@@ -1159,13 +1197,13 @@ function AppShell() {
                   </div>
                 )}
                 <div style={{ flex: 1 }} />
-                <button style={btnGhost} onClick={clearShipmentSelection}><X size={14} /> Clear</button>
+                <button style={btnGhost} onClick={clearShipmentSelection} disabled={billBusy}><X size={14} /> Clear</button>
                 <button
-                  style={{ ...btnPrimary, opacity: selectedShipmentMixedCustomers ? 0.5 : 1 }}
+                  style={{ ...btnPrimary, opacity: selectedShipmentMixedCustomers || billBusy ? 0.5 : 1 }}
                   onClick={generateBillFromShipmentsTab}
-                  disabled={selectedShipmentMixedCustomers}
+                  disabled={selectedShipmentMixedCustomers || billBusy}
                 >
-                  <Printer size={14} /> Generate &amp; print bill
+                  <Printer size={14} /> {billBusy ? "Generating…" : "Generate & print bill"}
                 </button>
               </Card>
             )}
@@ -1376,16 +1414,16 @@ function AppShell() {
                     const rowBg = inv.payment ? "#EEF3EA" : "#FBF2E0";
                     const rowBorder = inv.payment ? GREEN : RUST;
                     return (
-                    <tr key={inv.serial} style={{ borderTop: `1px solid ${LINE}`, background: rowBg, borderLeft: `3px solid ${rowBorder}`, opacity: inv.carriedForward ? 0.65 : 1 }}>
-                      <td style={{ padding: "9px 10px" }}>
+                    <tr key={inv.serial} style={{ borderTop: `1px solid ${LINE}`, background: rowBg, borderLeft: `3px solid ${rowBorder}` }}>
+                      <td style={{ padding: "9px 10px", opacity: inv.carriedForward ? 0.65 : 1 }}>
                         <Stamp>#{inv.serial}</Stamp>
                         {inv.carriedForward && <div style={{ fontSize: 10.5, color: "#8A8574", marginTop: 3 }}>carried forward</div>}
                       </td>
-                      <td style={{ padding: "9px 10px" }}>{customerById(inv.customerId)?.name || "—"}</td>
-                      <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{inv.generatedDate}</td>
-                      <td style={{ padding: "9px 10px" }}>{inv.shipmentIds.length}</td>
-                      <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{pkr(inv.total)}</td>
-                      <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace", color: inv.previousBalance ? RUST : "#B4AE9C" }}>
+                      <td style={{ padding: "9px 10px", opacity: inv.carriedForward ? 0.65 : 1 }}>{customerById(inv.customerId)?.name || "—"}</td>
+                      <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace", opacity: inv.carriedForward ? 0.65 : 1 }}>{inv.generatedDate}</td>
+                      <td style={{ padding: "9px 10px", opacity: inv.carriedForward ? 0.65 : 1 }}>{inv.shipmentIds.length}</td>
+                      <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace", opacity: inv.carriedForward ? 0.65 : 1 }}>{pkr(inv.total)}</td>
+                      <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace", color: inv.previousBalance ? RUST : "#B4AE9C", opacity: inv.carriedForward ? 0.65 : 1 }}>
                         {inv.previousBalance ? (
                           <>
                             {pkr(inv.previousBalance)}
@@ -1393,8 +1431,8 @@ function AppShell() {
                           </>
                         ) : "—"}
                       </td>
-                      <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{pkr(totalPayable)}</td>
-                      <td style={{ padding: "9px 10px" }}><PaymentBadge payment={inv.payment} /></td>
+                      <td style={{ padding: "9px 10px", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, opacity: inv.carriedForward ? 0.65 : 1 }}>{pkr(totalPayable)}</td>
+                      <td style={{ padding: "9px 10px", opacity: inv.carriedForward ? 0.65 : 1 }}><PaymentBadge payment={inv.payment} /></td>
                       <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                           <button onClick={() => reopenInvoice(inv)} style={{ ...btnGhost, padding: "4px 10px" }}><Eye size={13} /> View / print</button>
